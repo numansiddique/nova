@@ -83,6 +83,7 @@ neutron_opts = [
 CONF = cfg.CONF
 CONF.register_opts(neutron_opts)
 CONF.import_opt('default_floating_pool', 'nova.network.floating_ips')
+CONF.import_opt('auto_assign_floating_ip', 'nova.network.floating_ips')
 CONF.import_opt('flat_injected', 'nova.network.manager')
 LOG = logging.getLogger(__name__)
 
@@ -330,6 +331,9 @@ class API(base_api.NetworkAPI):
                             security_group_ids, available_macs, dhcp_opts)
                     created_port_ids.append(created_port)
                     ports_in_requested_order.append(created_port)
+                if CONF.auto_assign_floating_ip:
+                    self._auto_assign_floating_ip(context,
+                                                  ports_in_requested_order[-1])
             except Exception:
                 with excutils.save_and_reraise_exception():
                     for port_id in touched_port_ids:
@@ -1232,6 +1236,25 @@ class API(base_api.NetworkAPI):
     def create_public_dns_domain(self, context, domain, project=None):
         """Create a private DNS domain with optional nova project."""
         raise NotImplementedError()
+
+    def _auto_assign_floating_ip(self, context, port_id):
+        neutron = neutronv2.get_client(context)
+        pool = CONF.default_floating_pool
+        try:
+            pool_id = self._get_floating_ip_pool_id_by_name_or_id(neutron,
+                                                                  pool)
+        except exception.FloatingIpPoolNotFound, exception.NovaException:
+            return
+
+        param = {'floatingip': {'floating_network_id': pool_id}}
+        try:
+            fip = neutron.create_floatingip(param)
+        except (neutron_client_exc.IpAddressGenerationFailureClient,
+                neutron_client_exc.ExternalIpAddressExhaustedClient):
+            return
+
+        param = {'floatingip': {'port_id': port_id}}
+        neutron.update_floatingip(fip['floatingip']['id'], param)
 
 
 def _ensure_requested_network_ordering(accessor, unordered, preferred):
